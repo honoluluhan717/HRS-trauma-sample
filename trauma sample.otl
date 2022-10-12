@@ -1,0 +1,117 @@
+= V4 Outline MultiLine NoSorting TabWidth=30
+
+H="directory"
+// Global Macros use $ symbol to be called. 
+
+global hrs "D:\HRS\Shared\base_data\hrs_cleaned"
+global medi "D:\HRS\Shared\base_data\hrs_cms\Stata"
+
+//Intermediate Data Path
+global intpath "D:\HRS\Projects\surgery\zc_surgery_and_serious_illness\data\int_data"
+
+// Final Data Path
+global datapath "D:\HRS\Projects\surgery\zc_surgery_and_serious_illness\data\final_data"
+
+//Log files path
+global outpath "D:\HRS\Projects\surgery\zc_surgery_and_serious_illness\output\in_progress"
+
+
+
+
+
+H="merge to chars, pdem, & helper data "
+
+use "D:\HRS\Shared\base_data\hrs_cleaned\helper_hours_2018.dta", clear
+rename id hhidpn
+
+gen ind_caregiver=.
+replace ind_caregiver=0 if n_f!=0 & n_i==0
+replace ind_caregiver=1 if n_i!=0 & n_f==0
+replace ind_caregiver=2 if n_f!=0 & n_i!=0
+replace ind_caregiver=3 if n_f==0 & n_i==0
+label define r 0 "paid help only" 1 "unpaid help only" 2 "had both helpers" 3 "no helpers"
+label values ind_caregiver r
+tab ind_caregiver
+
+gen unpaid=n_i!=0
+tab unpaid,nol
+
+gen helphours=hlphrs_i>=56 
+
+keep hhidpn ind_caregiver year helphours unpaid hlphrs_i hlphrs_f
+merge 1:m year hhidpn using "${intpath}/hrsmerged.dta"
+drop if _merge==1
+drop _merge
+save "${intpath}/t.dta", replace
+
+use "D:\HRS\Shared\base_data\hrs_cleaned\pdem_withvarnames_00_16.dta", clear
+sort id core_year
+by id: carryforward pdem,replace
+gen prob_dem=pdem>=.5 if !missing(pdem)
+
+tab prob_dem,m
+rename id hhidpn
+rename core_year year
+
+keep hhidpn year prob_dem pdem3 pdem
+merge 1:m hhidpn year using "${intpath}/t.dta"
+drop if _merge==1
+drop _merge
+tab prob_dem
+save "${intpath}/w.dta", replace
+
+import sas using "D:\HRS\Projects\surgery\zc_surgery_and_serious_illness\data\int_data\charls_0d_n12m.sas7bdat",case(lower)clear
+tab charls_index_wt_0d_n12m
+keep bid_hrs_24 index_date charls_index_wt_0d_n12m
+merge 1:m  bid_hrs_24 index_date using "${intpath}/w.dta"
+drop if _merge==1
+drop _merge
+tab charls_index_wt_0d_n12m
+
+merge m:1 hhidpn index_date using "${intpath}/hrsmerged.dta"
+gen ind_vunerable= agenew==2 | pdem3<0.5 | adl_independent_core==0 
+keep if _merge==3
+drop _merge
+
+recode ind_caregiver(.=3)
+recode helphours (.=0)
+recode unpaid (.=0)
+
+//apply selection criteria 
+sort hhidpn index_date
+
+//year 2008 to 2018 
+keep if year>=2008
+
+//age greater than 65 
+keep if agenew!=9
+
+//have at least 12 months of ffs 
+gen ffs12=cont_ffs_n_mos>=12 & !missing(cont_ffs_n_mos)
+keep if ffs12==1
+replace ind_copd=0 if !oxygen | missing(oxygen)
+replace ind_dem=0 if !n_hosp_adm_n12m
+replace ind_chf=0 if !n_hosp_adm_n6m & n_edvis_n6m<2
+
+//completed 1+ HRS survey before trauma 
+keep if hasbefore==1
+
+//at least one serious illness 
+egen ind_si_any=rowmax(ind_dem ind_canc ind_esrd ind_chf ind_copd ind_liver ind_frail nhres ind_vunerable)
+keep if ind_si_any==1
+
+//any trauma diagnosis 
+keep if trauma_flag==1
+
+
+
+
+//fill prob_dem missing 
+by hhidpn: replace pdem=pdem[_n-1] if year==2018
+replace prob_dem=pdem>=.5 if !missing(pdem)
+tab prob_dem,m
+
+save "${intpath}/March_abstract_trauma.dta", replace
+
+
+H="trauma sample"
